@@ -5,19 +5,10 @@ import streamlit as st
 from PIL import Image, ImageFilter
 
 AI_MODELS = {
-    "AI Fast (FSRCNN)": (
-        "https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb",
-        "models/FSRCNN_x4.pb",
-        "fsrcnn",
-        4,
-    ),
-    "AI Pro Smooth (Real-ESRGAN ONNX)": (
-        "https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/main/realesr-general-x4v3.onnx",
-        "models/realesr-general-x4v3.onnx",
-    ),
+    "AI Fast (FSRCNN)": ("https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb", "models/FSRCNN_x4.pb", "fsrcnn", 4),
 }
 
-st.set_page_config(page_title="UPSCALE BANG JEFF AI PRO SMOOTH", page_icon="👑", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="UPSCALE BANG JEFF AI FAST", page_icon="👑", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -80,195 +71,30 @@ for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"
     if k not in st.session_state: st.session_state[k]=v
 
 def up(im,scale,sharp):
-    """Bang Jeff SILK EDGE V19: smooth surfaces, sharpen only meaningful edges."""
-    import cv2, numpy as np
-
-    out=im.resize(
-        (round(im.width*scale), round(im.height*scale)),
-        Image.Resampling.LANCZOS
-    )
-    if not sharp:
-        return out
-
-    rgb=np.asarray(out.convert("RGB"))
-    bgr=cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-    # Stronger edge-preserving cleanup than V18.
-    clean=cv2.bilateralFilter(
-        bgr,
-        d=7,
-        sigmaColor=28,
-        sigmaSpace=5
-    )
-
-    # Build an edge mask from the clean luminance channel.
-    gray=cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY)
-    gx=cv2.Sobel(gray,cv2.CV_32F,1,0,ksize=3)
-    gy=cv2.Sobel(gray,cv2.CV_32F,0,1,ksize=3)
-    mag=cv2.magnitude(gx,gy)
-    mask=np.clip((mag-12.0)/48.0,0.0,1.0)
-    mask=cv2.GaussianBlur(mask,(0,0),1.0)
-    mask=mask[...,None]
-
-    # Clean base remains dominant; original structure is restored mainly at edges.
-    base=clean.astype(np.float32)
-    orig=bgr.astype(np.float32)
-    blended=base*0.78 + orig*0.22
-
-    # Very restrained sharpening source.
-    soft=cv2.GaussianBlur(clean,(0,0),0.72)
-    detail=clean.astype(np.float32) + (clean.astype(np.float32)-soft.astype(np.float32))*0.22
-    result=blended*(1.0-mask*0.42) + detail*(mask*0.42 + (1.0-mask*0.42)*0.0)
-    result=np.clip(result,0,255).astype(np.uint8)
-
-    return Image.fromarray(cv2.cvtColor(result,cv2.COLOR_BGR2RGB))
+    out=im.resize((round(im.width*scale),round(im.height*scale)),Image.Resampling.LANCZOS)
+    if sharp:
+        out=out.filter(ImageFilter.UnsharpMask(radius=1.2,percent=70+int(sharp*1.4),threshold=2))
+    return out
 
 @st.cache_resource(show_spinner=False)
 def load_ai_model(engine_name):
-    """Load either FSRCNN or the Real-ESRGAN x4v3 ONNX model."""
+    """Download and cache the selected x4 AI model on the Streamlit server."""
     try:
         import cv2
-        url, path_str = AI_MODELS[engine_name][:2]
-        model_path = Path(path_str)
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        min_size = 1_000_000 if engine_name == "AI Fast (FSRCNN)" else 4_000_000
-        if not model_path.exists() or model_path.stat().st_size < min_size:
-            urllib.request.urlretrieve(url, model_path)
-
-        if engine_name == "AI Pro Smooth (Real-ESRGAN ONNX)":
-            net = cv2.dnn.readNetFromONNX(str(model_path))
-            return ("onnx", net), None
-
         if not hasattr(cv2, "dnn_superres"):
             raise RuntimeError("OpenCV contrib is not installed")
-        sr = cv2.dnn_superres.DnnSuperResImpl_create()
+        url, path_str, model_name, model_scale = AI_MODELS[engine_name]
+        model_path=Path(path_str)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        min_size = 1_000_000 if model_name == "fsrcnn" else 30_000_000
+        if not model_path.exists() or model_path.stat().st_size < min_size:
+            urllib.request.urlretrieve(url, model_path)
+        sr=cv2.dnn_superres.DnnSuperResImpl_create()
         sr.readModel(str(model_path))
-        sr.setModel("fsrcnn", 4)
-        return ("fsrcnn", sr), None
+        sr.setModel(model_name, model_scale)
+        return sr, None
     except Exception as e:
         return None, str(e)
-
-def _realesrgan_onnx_4x(rgb, net, tile=256, overlap=16):
-    """Run the RGB NCHW Real-ESRGAN ONNX model in overlapping tiles."""
-    import numpy as np
-    h, w = rgb.shape[:2]
-    out_h, out_w = h * 4, w * 4
-    acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
-    weights = np.zeros((out_h, out_w, 1), dtype=np.float32)
-    step = max(1, tile - overlap)
-
-    for y in range(0, h, step):
-        y0 = min(y, max(0, h - tile))
-        y1 = min(h, y0 + tile)
-        for x in range(0, w, step):
-            x0 = min(x, max(0, w - tile))
-            x1 = min(w, x0 + tile)
-            patch = rgb[y0:y1, x0:x1]
-            ph, pw = patch.shape[:2]
-
-            inp = np.transpose(patch.astype(np.float32) / 255.0, (2, 0, 1))[None, ...]
-            net.setInput(inp)
-            pred = net.forward()[0]
-            pred = np.transpose(pred, (1, 2, 0))
-            pred = np.clip(pred * 255.0, 0, 255).astype(np.float32)
-
-            oy0, ox0 = y0 * 4, x0 * 4
-            oy1, ox1 = oy0 + ph * 4, ox0 + pw * 4
-
-            feather = min(overlap * 4, min(ph * 4, pw * 4) // 2)
-            wy = np.ones(ph * 4, dtype=np.float32)
-            wx = np.ones(pw * 4, dtype=np.float32)
-            if feather > 1:
-                if x0 > 0:
-                    wx[:feather] = np.linspace(0, 1, feather)
-                if x1 < w:
-                    wx[-feather:] = np.linspace(1, 0, feather)
-                if y0 > 0:
-                    wy[:feather] = np.linspace(0, 1, feather)
-                if y1 < h:
-                    wy[-feather:] = np.linspace(1, 0, feather)
-            weight = (wy[:, None] * wx[None, :])[..., None]
-
-            acc[oy0:oy1, ox0:ox1] += pred * weight
-            weights[oy0:oy1, ox0:ox1] += weight
-
-    return np.clip(acc / np.maximum(weights, 1e-6), 0, 255).astype(np.uint8)
-
-def _color_lock(ai_rgb, original_rgb):
-    """Preserve the original chroma while using AI for luminance/detail."""
-    import cv2, numpy as np
-    orig = cv2.resize(
-        original_rgb,
-        (ai_rgb.shape[1], ai_rgb.shape[0]),
-        interpolation=cv2.INTER_LANCZOS4,
-    )
-    ai_ycc = cv2.cvtColor(ai_rgb, cv2.COLOR_RGB2YCrCb)
-    orig_ycc = cv2.cvtColor(orig, cv2.COLOR_RGB2YCrCb)
-
-    y_ai = ai_ycc[..., 0].astype(np.float32)
-    y_orig = orig_ycc[..., 0].astype(np.float32)
-    y = np.clip(y_ai * 0.82 + y_orig * 0.18, 0, 255).astype(np.uint8)
-
-    locked = np.dstack((y, orig_ycc[..., 1], orig_ycc[..., 2]))
-    return cv2.cvtColor(locked, cv2.COLOR_YCrCb2RGB)
-
-def ai_upscale(im, target_scale, sharp, engine_name):
-    """AI x4 upscale with color-locked Real-ESRGAN ONNX."""
-    import cv2, numpy as np
-
-    loaded, err = load_ai_model(engine_name)
-    if loaded is None:
-        raise RuntimeError(f"AI engine belum siap: {err}")
-
-    kind, model = loaded
-    rgb = np.asarray(im.convert("RGB"))
-
-    if kind == "onnx":
-        rgb4 = _realesrgan_onnx_4x(rgb, model, tile=256, overlap=16)
-    else:
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        tile = 256
-        h, w = bgr.shape[:2]
-        out = np.zeros((h * 4, w * 4, 3), dtype=np.uint8)
-        for y in range(0, h, tile):
-            for x in range(0, w, tile):
-                patch = bgr[y:min(y+tile,h), x:min(x+tile,w)]
-                ph, pw = patch.shape[:2]
-                up = model.upsample(patch)
-                out[y*4:y*4+ph*4, x*4:x*4+pw*4] = up
-        rgb4 = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
-
-    rgb4 = _color_lock(rgb4, rgb)
-
-    if target_scale != 4:
-        rgb4 = np.asarray(
-            Image.fromarray(rgb4).resize(
-                (round(im.width * target_scale), round(im.height * target_scale)),
-                Image.Resampling.LANCZOS,
-            )
-        )
-
-    result = Image.fromarray(rgb4)
-    if sharp:
-        bgr = cv2.cvtColor(np.asarray(result), cv2.COLOR_RGB2BGR)
-        clean = cv2.bilateralFilter(bgr, d=7, sigmaColor=24, sigmaSpace=5)
-
-        gray = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY)
-        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-        mag = cv2.magnitude(gx, gy)
-        mask = np.clip((mag - 14.0) / 52.0, 0.0, 1.0)
-        mask = cv2.GaussianBlur(mask, (0, 0), 1.0)[..., None]
-
-        base = clean.astype(np.float32) * 0.84 + bgr.astype(np.float32) * 0.16
-        soft = cv2.GaussianBlur(clean, (0, 0), 0.72)
-        detail = clean.astype(np.float32) + (clean.astype(np.float32) - soft.astype(np.float32)) * 0.16
-        out = base * (1.0 - mask * 0.36) + detail * (mask * 0.36)
-        result = Image.fromarray(
-            cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_BGR2RGB)
-        )
-
-    return result
 
 def ai_upscale(im, target_scale, sharp, engine_name):
     """AI x4 super-resolution. FSRCNN is the fast public-cloud option;  is the slower pro option."""
@@ -292,126 +118,86 @@ def ai_upscale(im, target_scale, sharp, engine_name):
     if target_scale != 4:
         result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
     if sharp:
-        # V19: clean the FSRCNN micro-texture first, then recover edge definition
-        # only where a real edge is detected.
-        rgb=np.asarray(result.convert("RGB"))
-        bgr=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR)
-
-        clean=cv2.bilateralFilter(
-            bgr,
-            d=7,
-            sigmaColor=26,
-            sigmaSpace=5
-        )
-
-        gray=cv2.cvtColor(clean,cv2.COLOR_BGR2GRAY)
-        gx=cv2.Sobel(gray,cv2.CV_32F,1,0,ksize=3)
-        gy=cv2.Sobel(gray,cv2.CV_32F,0,1,ksize=3)
-        mag=cv2.magnitude(gx,gy)
-        mask=np.clip((mag-14.0)/52.0,0.0,1.0)
-        mask=cv2.GaussianBlur(mask,(0,0),1.0)[...,None]
-
-        base=clean.astype(np.float32)*0.80 + bgr.astype(np.float32)*0.20
-        soft=cv2.GaussianBlur(clean,(0,0),0.72)
-        detail=clean.astype(np.float32)+(clean.astype(np.float32)-soft.astype(np.float32))*0.20
-
-        # Keep smoothing across flat areas; put the extra definition only on edges.
-        result=base*(1.0-mask*0.40)+detail*(mask*0.40)
-        result=np.clip(result,0,255).astype(np.uint8)
-        result=Image.fromarray(cv2.cvtColor(result,cv2.COLOR_BGR2RGB))
+        result=result.filter(ImageFilter.UnsharpMask(radius=1.05,percent=55+int(sharp*.9),threshold=2))
     return result
 
+# ==================== BANG JEFF V25: SWINIR REAL-WORLD ====================
+SWINIR_MODEL_URL = "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN.pth"
+SWINIR_NET_URL = "https://raw.githubusercontent.com/JingyunLiang/SwinIR/main/models/network_swinir.py"
+SWINIR_MODEL_PATH = Path("models/003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN.pth")
+SWINIR_NET_PATH = Path("models/network_swinir.py")
+
+def _download_file(url, path, min_size=1):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists() or path.stat().st_size < min_size:
+        urllib.request.urlretrieve(url, path)
+
 @st.cache_resource(show_spinner=False)
-def load_onnx_model():
-    """Real-ESRGAN General x4v3 exported to ONNX; runs through OpenCV DNN."""
-    try:
-        import cv2
-        url, path_str = AI_MODELS["AI Pro Smooth (Real-ESRGAN ONNX)"]
-        model_path=Path(path_str)
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        if not model_path.exists() or model_path.stat().st_size < 4_000_000:
-            urllib.request.urlretrieve(url, model_path)
-        net=cv2.dnn.readNetFromONNX(str(model_path))
-        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        return net, None
-    except Exception as e:
-        return None, str(e)
+def load_swinir():
+    import sys, importlib.util, torch
+    _download_file(SWINIR_NET_URL, SWINIR_NET_PATH, 10000)
+    _download_file(SWINIR_MODEL_URL, SWINIR_MODEL_PATH, 50_000_000)
+    spec=importlib.util.spec_from_file_location("bangjeff_swinir_net", SWINIR_NET_PATH)
+    mod=importlib.util.module_from_spec(spec)
+    sys.modules["bangjeff_swinir_net"]=mod
+    spec.loader.exec_module(mod)
+    model=mod.SwinIR(upscale=4, in_chans=3, img_size=64, window_size=8, img_range=1.,
+                     depths=[6,6,6,6,6,6], embed_dim=180, num_heads=[6,6,6,6,6,6],
+                     mlp_ratio=2, upsampler="nearest+conv", resi_connection="1conv")
+    ckpt=torch.load(SWINIR_MODEL_PATH, map_location="cpu")
+    state=ckpt["params_ema"] if isinstance(ckpt,dict) and "params_ema" in ckpt else ckpt
+    model.load_state_dict(state, strict=True)
+    model.eval()
+    return model, torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def ai_pro_smooth_upscale(im, target_scale, sharp):
-    """AI Pro Smooth V24: source color/tonality locked; AI contributes luminance detail only."""
-    import cv2, numpy as np
-    net, err=load_onnx_model()
-    if net is None:
-        raise RuntimeError(f"AI Pro Smooth belum siap: {err}")
-
-    rgb=np.asarray(im.convert("RGB"))
+def swinir_upscale(im, target_scale, sharp):
+    import numpy as np, cv2, torch
+    model, device=load_swinir()
+    model=model.to(device)
+    rgb=np.asarray(im.convert("RGB"),dtype=np.float32)/255.0
     h,w=rgb.shape[:2]
-    tile=256
-    out=np.zeros((h*4,w*4,3),dtype=np.uint8)
-
-    for y in range(0,h,tile):
-        for x in range(0,w,tile):
-            patch=rgb[y:min(y+tile,h),x:min(x+tile,w)]
-            ph,pw=patch.shape[:2]
-            blob=cv2.dnn.blobFromImage(
-                patch, scalefactor=1/255.0, size=(pw,ph),
-                swapRB=False, crop=False
-            )
-            net.setInput(blob)
-            pred=net.forward()[0].transpose(1,2,0)
-            pred=np.clip(pred*255.0,0,255).astype(np.uint8)
-            out[y*4:y*4+ph*4,x*4:x*4+pw*4]=pred
-
-    ai=Image.fromarray(out,"RGB")
-    target_size=(round(im.width*target_scale),round(im.height*target_scale))
-    if ai.size != target_size:
-        ai=ai.resize(target_size,Image.Resampling.LANCZOS)
-
-    # IMPORTANT: the resized original is the visual/color authority.
-    # AI is used only for high-frequency luminance detail.
-    base=im.resize(target_size,Image.Resampling.LANCZOS)
-    base_rgb=np.asarray(base).astype(np.uint8)
-    ai_rgb=np.asarray(ai).astype(np.uint8)
-
-    base_lab=cv2.cvtColor(base_rgb,cv2.COLOR_RGB2LAB).astype(np.float32)
-    ai_lab=cv2.cvtColor(ai_rgb,cv2.COLOR_RGB2LAB).astype(np.float32)
-
-    base_l=base_lab[...,0]
-    ai_l=ai_lab[...,0]
-
-    # Extract only fine AI detail; do NOT import AI's global tone/color.
-    ai_smooth=cv2.GaussianBlur(ai_l,(0,0),1.25)
-    ai_detail=ai_l-ai_smooth
-
-    # Gentle structure lift plus restrained micro-detail.
-    # Higher slider = slightly stronger edge/detail, never color change.
-    strength=0.35 + 0.65*(float(sharp)/100.0)
-    detail_gain=0.48*strength
-    l_new=base_l + ai_detail*detail_gain
-
-    # Keep luminance safely within range and keep source chroma 100%.
-    result_lab=base_lab.copy()
-    result_lab[...,0]=np.clip(l_new,0,255)
-    result=cv2.cvtColor(np.clip(result_lab,0,255).astype(np.uint8),cv2.COLOR_LAB2RGB)
-
-    # Final edge-only cleanup for a smooth commercial-photo look.
+    # Conservative tile size for CPU/Streamlit Cloud. Must be multiple of 8.
+    tile=128
+    overlap=32
+    pad=8
+    ph=(tile-h%tile)%tile
+    pw=(tile-w%tile)%tile
+    if ph or pw:
+        rgb=np.pad(rgb,((0,ph),(0,pw),(0,0)),mode="reflect")
+    H,W=rgb.shape[:2]
+    out=np.zeros((H*4,W*4,3),np.float32)
+    weight=np.zeros((H*4,W*4,1),np.float32)
+    stride=tile-overlap
+    ys=list(range(0,max(1,H-tile+1),stride))
+    xs=list(range(0,max(1,W-tile+1),stride))
+    if ys[-1] != H-tile: ys.append(H-tile)
+    if xs[-1] != W-tile: xs.append(W-tile)
+    with torch.inference_mode():
+        for y in ys:
+            for x in xs:
+                patch=rgb[y:y+tile,x:x+tile]
+                ten=torch.from_numpy(np.transpose(patch,(2,0,1))).unsqueeze(0).to(device)
+                pred=model(ten).clamp(0,1)[0].permute(1,2,0).cpu().numpy()
+                out[y*4:(y+tile)*4,x*4:(x+tile)*4]+=pred
+                weight[y*4:(y+tile)*4,x*4:(x+tile)*4]+=1.0
+    out=np.clip(out/np.maximum(weight,1e-6),0,1)
+    out=out[:h*4,:w*4]
+    # Color lock: AI supplies luminance/detail; original supplies chroma.
+    base=np.asarray(im.convert("RGB").resize((w*4,h*4),Image.Resampling.LANCZOS),dtype=np.uint8)
+    ai=(out*255).round().astype(np.uint8)
+    ai_lab=cv2.cvtColor(ai,cv2.COLOR_RGB2LAB)
+    base_lab=cv2.cvtColor(base,cv2.COLOR_RGB2LAB)
+    # 85% AI luminance + 15% clean base luminance, 100% original chroma.
+    ai_lab[:,:,0]=np.clip(ai_lab[:,:,0].astype(np.float32)*0.85 + base_lab[:,:,0].astype(np.float32)*0.15,0,255).astype(np.uint8)
+    ai_lab[:,:,1]=base_lab[:,:,1]
+    ai_lab[:,:,2]=base_lab[:,:,2]
+    result=Image.fromarray(cv2.cvtColor(ai_lab,cv2.COLOR_LAB2RGB))
+    if target_scale != 4:
+        result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
     if sharp:
-        bgr=cv2.cvtColor(result,cv2.COLOR_RGB2BGR)
-        clean=cv2.bilateralFilter(bgr,d=7,sigmaColor=22,sigmaSpace=5)
-        gray=cv2.cvtColor(clean,cv2.COLOR_BGR2GRAY)
-        gx=cv2.Sobel(gray,cv2.CV_32F,1,0,ksize=3)
-        gy=cv2.Sobel(gray,cv2.CV_32F,0,1,ksize=3)
-        mag=cv2.magnitude(gx,gy)
-        mask=np.clip((mag-16.0)/55.0,0.0,1.0)
-        mask=cv2.GaussianBlur(mask,(0,0),1.0)[...,None]
-        amount=0.05 + 0.12*(float(sharp)/100.0)
-        soft=cv2.GaussianBlur(clean,(0,0),0.85)
-        detail=clean.astype(np.float32)+(clean.astype(np.float32)-soft.astype(np.float32))*amount
-        c=clean.astype(np.float32)
-        result=c*(1.0-mask*0.35)+detail*(mask*0.35)
+        result=result.filter(ImageFilter.UnsharpMask(radius=0.85,percent=35+int(sharp*0.55),threshold=3))
+    return result
 
-    return Image.fromarray(np.clip(result,0,255).astype(np.uint8),"RGB")
 
 def encode(im,fmt):
     b=io.BytesIO()
@@ -528,11 +314,11 @@ if page in ("Home","Upscale"):
     with R:
         st.markdown('<div class="panel">',unsafe_allow_html=True)
         st.markdown('<div class="panel-title">⚙️ Pengaturan Upscale</div>',unsafe_allow_html=True)
-        engine_options=["Smart Enhance","AI Fast (FSRCNN)","AI Pro Smooth (Real-ESRGAN ONNX)"]
+        engine_options=["Smart Enhance","AI Fast (FSRCNN)","AI Pro Smooth (SwinIR)"]
         if st.session_state.engine not in engine_options: st.session_state.engine="Smart Enhance"
         engine=st.radio("Engine",engine_options,index=engine_options.index(st.session_state.engine),horizontal=True)
         st.session_state.engine=engine
-        st.caption("⚡ AI Pro Smooth = Real-ESRGAN General x4v3 • AI Fast = FSRCNN • Smart Enhance = clean Lanczos")
+        st.caption("⚡ AI Pro Smooth = SwinIR Real-World x4 • AI Fast = FSRCNN • Smart Enhance = Lanczos")
         scale=st.radio("Faktor Upscale",[2,2.5,4],index=[2,2.5,4].index(st.session_state.scale),horizontal=True,format_func=lambda x:f"{x:g}×")
         sharp=st.slider("Detail / Sharpen",0,100,st.session_state.sharp)
         fmt=st.selectbox("Format Output",["JPG","PNG","WEBP"],index=["JPG","PNG","WEBP"].index(st.session_state.fmt))
@@ -569,8 +355,7 @@ if page in ("Home","Upscale"):
                 res=[]; bar=st.progress(0,text="Memproses...")
                 for i,f in enumerate(files):
                     im=Image.open(f).convert("RGB")
-                    processed = (ai_pro_smooth_upscale(im,scale,sharp) if engine == "AI Pro Smooth (Real-ESRGAN ONNX)" else ai_upscale(im,scale,sharp,engine) if engine == "AI Fast (FSRCNN)" else up(im,scale,sharp))
-                    res.append((f.name,im,processed))
+                    res.append((f.name,im,swinir_upscale(im,scale,sharp) if engine == "AI Pro Smooth (SwinIR)" else (ai_upscale(im,scale,sharp,engine) if engine == "AI Fast (FSRCNN)" else up(im,scale,sharp))))
                     bar.progress((i+1)/len(files),text=f"Upscale {i+1}/{len(files)} • {f.name}")
                 st.session_state.results=res
                 st.session_state.page="Output"
@@ -587,7 +372,7 @@ if page=="Output":
         st.markdown(f'### <span class="green">✓ HASIL UPSCALE ({len(results)})</span>',unsafe_allow_html=True)
         st.success(f"{len(results)} gambar selesai • {st.session_state.engine} • {st.session_state.scale:g}× • {st.session_state.fmt} • Geser garis pada foto untuk melihat perbedaan detail.")
         st.markdown("### 🎚️ BEFORE / AFTER — DETAIL COMPARISON")
-        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale. AI Pro Smooth memakai Real-ESRGAN General x4v3 ONNX.")
+        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale. AI Pro Smooth memakai SwinIR Real-World x4 dengan color lock; AI Fast memakai FSRCNN neural super-resolution.")
         cols=st.columns(min(4,len(results)))
         for i,(name,orig,out) in enumerate(results):
             with cols[i%len(cols)]:
