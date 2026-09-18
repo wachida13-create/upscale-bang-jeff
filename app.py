@@ -71,47 +71,39 @@ for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"
     if k not in st.session_state: st.session_state[k]=v
 
 def up(im,scale,sharp):
-    """Bang Jeff SILK EDGE V19: smooth surfaces, sharpen only meaningful edges."""
+    """Bang Jeff Smooth Photo: clean enlargement with restrained edge detail."""
     import cv2, numpy as np
 
-    out=im.resize(
-        (round(im.width*scale), round(im.height*scale)),
-        Image.Resampling.LANCZOS
-    )
+    target=(round(im.width*scale),round(im.height*scale))
+    base=im.resize(target,Image.Resampling.LANCZOS)
+
     if not sharp:
-        return out
+        return base
 
-    rgb=np.asarray(out.convert("RGB"))
-    bgr=cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    rgb=np.asarray(base.convert("RGB"))
+    bgr=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR)
 
-    # Stronger edge-preserving cleanup than V18.
-    clean=cv2.bilateralFilter(
-        bgr,
-        d=7,
-        sigmaColor=28,
-        sigmaSpace=5
-    )
+    # Remove tiny amplified texture while protecting real contours.
+    clean=cv2.bilateralFilter(bgr,d=7,sigmaColor=24,sigmaSpace=4)
 
-    # Build an edge mask from the clean luminance channel.
-    gray=cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY)
+    # Blend mostly-clean pixels with a little original structure.
+    clean_f=clean.astype(np.float32)
+    orig_f=bgr.astype(np.float32)
+    surface=clean_f*0.82+orig_f*0.18
+
+    # Recover only stronger luminance edges.
+    gray=cv2.cvtColor(clean,cv2.COLOR_BGR2GRAY).astype(np.float32)
     gx=cv2.Sobel(gray,cv2.CV_32F,1,0,ksize=3)
     gy=cv2.Sobel(gray,cv2.CV_32F,0,1,ksize=3)
-    mag=cv2.magnitude(gx,gy)
-    mask=np.clip((mag-12.0)/48.0,0.0,1.0)
-    mask=cv2.GaussianBlur(mask,(0,0),1.0)
-    mask=mask[...,None]
+    edge=cv2.magnitude(gx,gy)
+    mask=np.clip((edge-18.0)/55.0,0.0,1.0)
+    mask=cv2.GaussianBlur(mask,(0,0),1.1)[...,None]
 
-    # Clean base remains dominant; original structure is restored mainly at edges.
-    base=clean.astype(np.float32)
-    orig=bgr.astype(np.float32)
-    blended=base*0.78 + orig*0.22
+    soft=cv2.GaussianBlur(clean,(0,0),0.75).astype(np.float32)
+    detail=clean_f+(clean_f-soft)*0.18
 
-    # Very restrained sharpening source.
-    soft=cv2.GaussianBlur(clean,(0,0),0.72)
-    detail=clean.astype(np.float32) + (clean.astype(np.float32)-soft.astype(np.float32))*0.22
-    result=blended*(1.0-mask*0.42) + detail*(mask*0.42 + (1.0-mask*0.42)*0.0)
+    result=surface*(1.0-mask*0.38)+detail*(mask*0.38)
     result=np.clip(result,0,255).astype(np.uint8)
-
     return Image.fromarray(cv2.cvtColor(result,cv2.COLOR_BGR2RGB))
 
 @st.cache_resource(show_spinner=False)
@@ -156,33 +148,40 @@ def ai_upscale(im, target_scale, sharp, engine_name):
     if target_scale != 4:
         result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
     if sharp:
-        # V19: clean the FSRCNN micro-texture first, then recover edge definition
-        # only where a real edge is detected.
-        rgb=np.asarray(result.convert("RGB"))
-        bgr=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR)
-
-        clean=cv2.bilateralFilter(
-            bgr,
-            d=7,
-            sigmaColor=26,
-            sigmaSpace=5
+        # Final photographic finish: retain AI structure, but anchor the image
+        # to a clean Lanczos base so synthetic micro-texture cannot dominate.
+        base=im.resize(
+            (round(im.width*target_scale),round(im.height*target_scale)),
+            Image.Resampling.LANCZOS
         )
 
-        gray=cv2.cvtColor(clean,cv2.COLOR_BGR2GRAY)
+        ai_rgb=np.asarray(result.convert("RGB"))
+        base_rgb=np.asarray(base.convert("RGB"))
+
+        # 62% clean photographic base + 38% AI detail.
+        fused=(base_rgb.astype(np.float32)*0.62 +
+               ai_rgb.astype(np.float32)*0.38)
+
+        bgr=cv2.cvtColor(np.clip(fused,0,255).astype(np.uint8),cv2.COLOR_RGB2BGR)
+
+        # Light edge-preserving cleanup after fusion.
+        clean=cv2.bilateralFilter(bgr,d=5,sigmaColor=18,sigmaSpace=3)
+
+        gray=cv2.cvtColor(clean,cv2.COLOR_BGR2GRAY).astype(np.float32)
         gx=cv2.Sobel(gray,cv2.CV_32F,1,0,ksize=3)
         gy=cv2.Sobel(gray,cv2.CV_32F,0,1,ksize=3)
-        mag=cv2.magnitude(gx,gy)
-        mask=np.clip((mag-14.0)/52.0,0.0,1.0)
+        edge=cv2.magnitude(gx,gy)
+        mask=np.clip((edge-20.0)/58.0,0.0,1.0)
         mask=cv2.GaussianBlur(mask,(0,0),1.0)[...,None]
 
-        base=clean.astype(np.float32)*0.80 + bgr.astype(np.float32)*0.20
-        soft=cv2.GaussianBlur(clean,(0,0),0.72)
-        detail=clean.astype(np.float32)+(clean.astype(np.float32)-soft.astype(np.float32))*0.20
+        clean_f=clean.astype(np.float32)
+        soft=cv2.GaussianBlur(clean,(0,0),0.72).astype(np.float32)
+        edge_detail=clean_f+(clean_f-soft)*0.16
 
-        # Keep smoothing across flat areas; put the extra definition only on edges.
-        result=base*(1.0-mask*0.40)+detail*(mask*0.40)
-        result=np.clip(result,0,255).astype(np.uint8)
-        result=Image.fromarray(cv2.cvtColor(result,cv2.COLOR_BGR2RGB))
+        final=clean_f*(1.0-mask*0.32)+edge_detail*(mask*0.32)
+        final=np.clip(final,0,255).astype(np.uint8)
+        result=Image.fromarray(cv2.cvtColor(final,cv2.COLOR_BGR2RGB))
+
     return result
 
 def encode(im,fmt):
