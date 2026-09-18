@@ -1,10 +1,13 @@
 
-import io, os, zipfile
+import io, os, zipfile, urllib.request
 from pathlib import Path
 import streamlit as st
 from PIL import Image, ImageFilter
 
-st.set_page_config(page_title="UPSCALE BANG JEFF", page_icon="👑", layout="wide")
+AI_MODEL_URL = "https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/EDSR_x4.pb"
+AI_MODEL_PATH = Path("models/EDSR_x4.pb")
+
+st.set_page_config(page_title="UPSCALE BANG JEFF AI", page_icon="👑", layout="wide")
 
 st.markdown("""
 <style>
@@ -17,6 +20,7 @@ st.markdown("""
 .muted{font-size:10px;color:#8da1bb}
 .hero{position:relative;z-index:5;font-size:50px;font-weight:1000;letter-spacing:-2px;line-height:1;background:linear-gradient(90deg,#fff,#59d2ff,#d568ff);-webkit-background-clip:text;color:transparent}
 .subtitle{font-size:17px;font-weight:700;color:#d8e5f4}
+.ai-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:linear-gradient(90deg,#ff1265,#7d4dff);color:#fff;font-size:11px;font-weight:1000;box-shadow:0 0 18px rgba(255,30,120,.22)}
 .feature{font-size:13px;font-weight:950;color:#fff;text-align:center}
 .quote{min-height:82px;padding:14px 17px;border-radius:15px;background:linear-gradient(135deg,#102945,#091727);border:1px solid #2c4d72}
 .quote b{font-size:14px;color:#fff}.quote span{display:block;font-size:11px;color:#c7d5e5;margin-top:5px}
@@ -52,7 +56,7 @@ pages = {
 labels=list(pages.values())
 label_to_key={v:k for k,v in pages.items()}
 
-for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"JPG"}.items():
+for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"JPG","engine":"AI EDSR"}.items():
     if k not in st.session_state: st.session_state[k]=v
 
 def up(im,scale,sharp):
@@ -60,6 +64,48 @@ def up(im,scale,sharp):
     if sharp:
         out=out.filter(ImageFilter.UnsharpMask(radius=1.2,percent=70+int(sharp*1.4),threshold=2))
     return out
+
+@st.cache_resource(show_spinner=False)
+def load_ai_model():
+    """Download and cache the EDSR x4 model on the Streamlit server."""
+    try:
+        import cv2
+        if not hasattr(cv2, "dnn_superres"):
+            raise RuntimeError("OpenCV contrib is not installed")
+        AI_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not AI_MODEL_PATH.exists() or AI_MODEL_PATH.stat().st_size < 30_000_000:
+            urllib.request.urlretrieve(AI_MODEL_URL, AI_MODEL_PATH)
+        sr=cv2.dnn_superres.DnnSuperResImpl_create()
+        sr.readModel(str(AI_MODEL_PATH))
+        sr.setModel("edsr",4)
+        return sr, None
+    except Exception as e:
+        return None, str(e)
+
+def ai_upscale(im, target_scale, sharp):
+    """EDSR x4 AI super-resolution. For 2x/2.5x, AI x4 is reduced to target size."""
+    import cv2, numpy as np
+    sr, err = load_ai_model()
+    if sr is None:
+        raise RuntimeError(f"AI engine belum siap: {err}")
+    rgb=np.array(im.convert("RGB"))
+    bgr=cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    # Tile inference keeps large photos from requiring one giant tensor.
+    tile=256
+    h,w=bgr.shape[:2]
+    out=np.zeros((h*4,w*4,3),dtype=np.uint8)
+    for y in range(0,h,tile):
+        for x in range(0,w,tile):
+            patch=bgr[y:min(y+tile,h),x:min(x+tile,w)]
+            ph,pw=patch.shape[:2]
+            up_patch=sr.upsample(patch)
+            out[y*4:y*4+ph*4,x*4:x*4+pw*4]=up_patch
+    result=Image.fromarray(cv2.cvtColor(out,cv2.COLOR_BGR2RGB))
+    if target_scale != 4:
+        result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
+    if sharp:
+        result=result.filter(ImageFilter.UnsharpMask(radius=1.05,percent=55+int(sharp*.9),threshold=2))
+    return result
 
 def encode(im,fmt):
     b=io.BytesIO()
@@ -148,11 +194,11 @@ with st.sidebar:
     st.markdown("**Bukan sekadar memperbesar gambar, tapi memperbesar peluang.**")
     st.caption("— Bang Jeff 👑")
     st.divider()
-    st.caption("V8.0 • Made with Passion ❤️")
+    st.caption("V13 AI • Made with Passion ❤️")
     st.caption("Online & Local • Batch image processing")
 
 st.markdown('<div class="hero">SMALL IMAGE, BIGGER DREAMS.</div>',unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Upscale Today. Create More. Earn More. Keep Growing. 🚀</div>',unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Upscale Today. Create More. Earn More. Keep Growing. 🚀 &nbsp; <span class="ai-badge">AI SUPER-RESOLUTION</span></div>',unsafe_allow_html=True)
 st.write("")
 for c,t in zip(st.columns(5),["🔍 Higher Resolution","✨ Sharper Details","📚 Batch Processing","⬇️ One Click Download","🌍 Online & Local"]):
     c.markdown(f'<div class="feature">{t}</div>',unsafe_allow_html=True)
@@ -176,6 +222,9 @@ if page in ("Home","Upscale"):
     with R:
         st.markdown('<div class="panel">',unsafe_allow_html=True)
         st.markdown('<div class="panel-title">⚙️ Pengaturan Upscale</div>',unsafe_allow_html=True)
+        engine=st.radio("Engine",["AI EDSR","Smart Enhance"],index=["AI EDSR","Smart Enhance"].index(st.session_state.engine),horizontal=True)
+        st.session_state.engine=engine
+        st.caption("🤖 AI EDSR = neural super-resolution • Smart Enhance = Lanczos + sharpening")
         scale=st.radio("Faktor Upscale",[2,2.5,4],index=[2,2.5,4].index(st.session_state.scale),horizontal=True,format_func=lambda x:f"{x:g}×")
         sharp=st.slider("Detail / Sharpen",0,100,st.session_state.sharp)
         fmt=st.selectbox("Format Output",["JPG","PNG","WEBP"],index=["JPG","PNG","WEBP"].index(st.session_state.fmt))
@@ -212,7 +261,7 @@ if page in ("Home","Upscale"):
                 res=[]; bar=st.progress(0,text="Memproses...")
                 for i,f in enumerate(files):
                     im=Image.open(f).convert("RGB")
-                    res.append((f.name,im,up(im,scale,sharp)))
+                    res.append((f.name,im,ai_upscale(im,scale,sharp) if engine=="AI EDSR" else up(im,scale,sharp)))
                     bar.progress((i+1)/len(files),text=f"Upscale {i+1}/{len(files)} • {f.name}")
                 st.session_state.results=res
                 st.session_state.page="Output"
@@ -227,9 +276,9 @@ if page=="Output":
     else:
         results=st.session_state.results
         st.markdown(f'### <span class="green">✓ HASIL UPSCALE ({len(results)})</span>',unsafe_allow_html=True)
-        st.success(f"{len(results)} gambar selesai • {st.session_state.scale:g}× • {st.session_state.fmt} • Geser garis pada foto untuk melihat perbedaan detail.")
+        st.success(f"{len(results)} gambar selesai • {st.session_state.engine} • {st.session_state.scale:g}× • {st.session_state.fmt} • Geser garis pada foto untuk melihat perbedaan detail.")
         st.markdown("### 🎚️ BEFORE / AFTER — DETAIL COMPARISON")
-        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale.")
+        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale. AI EDSR memakai model neural x4 dan ditile agar lebih ramah RAM.")
         cols=st.columns(min(4,len(results)))
         for i,(name,orig,out) in enumerate(results):
             with cols[i%len(cols)]:
@@ -247,13 +296,12 @@ if page=="Output":
         st.markdown("### 📦 DOWNLOAD HASIL")
         d1,d2,d3=st.columns([1.5,1.25,.8])
         d1.download_button("⬇️ DOWNLOAD ALL HASIL (ZIP)",make_zip(),file_name=f"Upscale_Bang_Jeff_{st.session_state.scale:g}x.zip",mime="application/zip",use_container_width=True)
-        if d2.button("📂 BUKA FOLDER OUTPUT",use_container_width=True):
+        if d2.button("💾 SAVE OUTPUT LOCALLY",use_container_width=True):
             outdir=Path.home()/"Pictures"/"Upscale_By_BangJeff";outdir.mkdir(parents=True,exist_ok=True)
             for name,orig,out in results:
                 data,ext,_=encode(out,st.session_state.fmt)
                 (outdir/(Path(name).stem+f"_{st.session_state.scale:g}x.{ext}")).write_bytes(data)
-            try: os.startfile(outdir)
-            except: pass
+            st.success(f"Tersimpan di {outdir}")
         if d3.button("🗑️ CLEAR HASIL",use_container_width=True):
             st.session_state.results=[];st.session_state.page="Upscale";st.rerun()
         st.markdown('</div>',unsafe_allow_html=True)
@@ -268,7 +316,7 @@ if page=="Settings":
 
 if page=="About":
     st.markdown("## ℹ️ About")
-    st.markdown("### 👑 UPSCALE BANG JEFF")
-    st.write("Upload → Upscale → Output → Download. Batch workflow untuk gambar, tersedia lokal maupun online.")
+    st.markdown("### 👑 UPSCALE BANG JEFF AI")
+    st.write("Upload → AI Super-Resolution → Compare → Download. Batch workflow untuk gambar, tersedia lokal maupun online.")
 
 st.markdown('<div style="text-align:center;color:#71859f;font-size:10px;padding:20px">UPSCALE BANG JEFF 👑 • CREATE MORE • EARN MORE • KEEP GROWING</div>',unsafe_allow_html=True)
