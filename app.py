@@ -71,14 +71,26 @@ for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"
     if k not in st.session_state: st.session_state[k]=v
 
 def up(im,scale,sharp):
-    """Bang Jeff Smooth Detail: clean enlargement with controlled, non-crunchy sharpening."""
+    """Bang Jeff Smooth Detail V17: suppress micro-grain, recover real edges, finish gently."""
     out=im.resize((round(im.width*scale),round(im.height*scale)),Image.Resampling.LANCZOS)
-    # Very light pre-smoothing reduces crunchy pixel/texture edges before detail recovery.
+
+    # Reduce amplified micro-texture without washing out larger forms.
     if sharp:
-        out=out.filter(ImageFilter.GaussianBlur(radius=0.28))
-        # Lower radius + moderate strength keeps edges defined without harsh halos.
-        strength=22+int(sharp*0.62)
-        out=out.filter(ImageFilter.UnsharpMask(radius=0.72,percent=strength,threshold=4))
+        smooth=out.filter(ImageFilter.GaussianBlur(radius=0.38))
+        # Blend most of the smooth base with a smaller amount of the original.
+        # This keeps fabric/backgrounds clean while preserving overall structure.
+        out=Image.blend(smooth,out,0.72)
+
+        # Controlled final sharpening: lower strength, larger threshold,
+        # so only meaningful edges are emphasized rather than fine grain.
+        strength=12+int(sharp*0.42)
+        out=out.filter(
+            ImageFilter.UnsharpMask(
+                radius=0.62,
+                percent=strength,
+                threshold=6
+            )
+        )
     return out
 
 @st.cache_resource(show_spinner=False)
@@ -123,10 +135,18 @@ def ai_upscale(im, target_scale, sharp, engine_name):
     if target_scale != 4:
         result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
     if sharp:
-        # FSRCNN already creates strong edges; keep the finishing pass gentle.
-        result=result.filter(ImageFilter.GaussianBlur(radius=0.22))
-        strength=18+int(sharp*0.48)
-        result=result.filter(ImageFilter.UnsharpMask(radius=0.68,percent=strength,threshold=4))
+        # FSRCNN can already produce strong micro-edges; suppress crunch before
+        # the finishing pass and sharpen only higher-contrast structures.
+        smooth=result.filter(ImageFilter.GaussianBlur(radius=0.30))
+        result=Image.blend(smooth,result,0.76)
+        strength=10+int(sharp*0.34)
+        result=result.filter(
+            ImageFilter.UnsharpMask(
+                radius=0.60,
+                percent=strength,
+                threshold=6
+            )
+        )
     return result
 
 def encode(im,fmt):
