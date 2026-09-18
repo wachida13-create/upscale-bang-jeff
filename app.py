@@ -22,6 +22,7 @@ footer{display:none!important}
 .bang{font-size:30px;font-weight:1000;font-style:italic;color:#fff;text-shadow:0 0 18px rgba(255,194,48,.35)}
 .muted{font-size:10px;color:#8da1bb}
 .hero{position:relative;z-index:5;font-size:50px;font-weight:1000;letter-spacing:-2px;line-height:1;background:linear-gradient(90deg,#fff,#59d2ff,#d568ff);-webkit-background-clip:text;color:transparent}
+.top-status{display:flex;justify-content:flex-end;align-items:center;gap:9px;margin-bottom:2px;font-size:11px;font-weight:900;color:#b9c9df;letter-spacing:.3px}.status-pill{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid rgba(71,213,255,.35);border-radius:999px;background:rgba(5,20,38,.72);box-shadow:0 0 18px rgba(46,184,255,.10)}.status-dot{width:9px;height:9px;border-radius:50%;background:#45f2ae;box-shadow:0 0 0 0 rgba(69,242,174,.7);animation:pulse 1.6s infinite}.status-dot.busy{background:#ff3d70;box-shadow:0 0 0 0 rgba(255,61,112,.7);animation:pulseBusy 1s infinite}.status-text{color:#eaf4ff}@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(69,242,174,.65)}70%{box-shadow:0 0 0 8px rgba(69,242,174,0)}100%{box-shadow:0 0 0 0 rgba(69,242,174,0)}}@keyframes pulseBusy{0%{box-shadow:0 0 0 0 rgba(255,61,112,.7)}70%{box-shadow:0 0 0 9px rgba(255,61,112,0)}100%{box-shadow:0 0 0 0 rgba(255,61,112,0)}}
 .subtitle{font-size:17px;font-weight:700;color:#d8e5f4}
 .ai-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:linear-gradient(90deg,#ff1265,#7d4dff);color:#fff;font-size:11px;font-weight:1000;box-shadow:0 0 18px rgba(255,30,120,.22)}
 .feature{font-size:13px;font-weight:950;color:#fff;text-align:center}
@@ -202,6 +203,8 @@ with st.sidebar:
     st.caption("V15 AI FAST • Made with Passion ❤️")
     st.caption("Online & Local • Batch image processing")
 
+status_slot=st.empty()
+status_slot.markdown('<div class="top-status"><div class="status-pill"><span class="status-dot"></span><span class="status-text">● READY • AI ENGINE ONLINE</span></div></div>',unsafe_allow_html=True)
 st.markdown('<div class="hero">SMALL IMAGE, BIGGER DREAMS.</div>',unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Upscale Today. Create More. Earn More. Keep Growing. 🚀 &nbsp; <span class="ai-badge">SMART IMAGE ENHANCER</span></div>',unsafe_allow_html=True)
 st.write("")
@@ -268,6 +271,7 @@ if page in ("Home","Upscale"):
             a,b=st.columns(2)
             if a.button("⚡ UPSCALE ALL",type="primary",use_container_width=True):
                 res=[]; bar=st.progress(0,text="Memproses...")
+                status_slot.markdown('<div class="top-status"><div class="status-pill"><span class="status-dot busy"></span><span class="status-text">⚡ PROCESSING • AI UPSCALE RUNNING</span></div></div>',unsafe_allow_html=True)
                 try:
                     for i,f in enumerate(files):
                         im=Image.open(f).convert("RGB")
