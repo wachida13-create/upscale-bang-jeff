@@ -7,6 +7,9 @@ from PIL import Image, ImageFilter
 AI_MODELS = {
     "AI Fast (FSRCNN)": ("https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb", "models/FSRCNN_x4.pb", "fsrcnn", 4),
 }
+REAL_ESRGAN_ONNX_URL = "https://media.axelera.ai/artifacts/model_cards/weights/image_enhancement/superresolution/RealESRGAN_x4plus.onnx"
+REAL_ESRGAN_ONNX_PATH = "models/RealESRGAN_x4plus.onnx"
+
 
 st.set_page_config(page_title="UPSCALE BANG JEFF AI FAST", page_icon="👑", layout="wide", initial_sidebar_state="expanded")
 
@@ -121,83 +124,63 @@ def ai_upscale(im, target_scale, sharp, engine_name):
         result=result.filter(ImageFilter.UnsharpMask(radius=1.05,percent=55+int(sharp*.9),threshold=2))
     return result
 
-# ==================== BANG JEFF V25: SWINIR REAL-WORLD ====================
-SWINIR_MODEL_URL = "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN.pth"
-SWINIR_NET_URL = "https://raw.githubusercontent.com/JingyunLiang/SwinIR/main/models/network_swinir.py"
-SWINIR_MODEL_PATH = Path("models/003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN.pth")
-SWINIR_NET_PATH = Path("models/network_swinir.py")
-
-def _download_file(url, path, min_size=1):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists() or path.stat().st_size < min_size:
-        urllib.request.urlretrieve(url, path)
-
 @st.cache_resource(show_spinner=False)
-def load_swinir():
-    import sys, importlib.util, torch
-    _download_file(SWINIR_NET_URL, SWINIR_NET_PATH, 10000)
-    _download_file(SWINIR_MODEL_URL, SWINIR_MODEL_PATH, 50_000_000)
-    spec=importlib.util.spec_from_file_location("bangjeff_swinir_net", SWINIR_NET_PATH)
-    mod=importlib.util.module_from_spec(spec)
-    sys.modules["bangjeff_swinir_net"]=mod
-    spec.loader.exec_module(mod)
-    model=mod.SwinIR(upscale=4, in_chans=3, img_size=64, window_size=8, img_range=1.,
-                     depths=[6,6,6,6,6,6], embed_dim=180, num_heads=[6,6,6,6,6,6],
-                     mlp_ratio=2, upsampler="nearest+conv", resi_connection="1conv")
-    ckpt=torch.load(SWINIR_MODEL_PATH, map_location="cpu")
-    state=ckpt["params_ema"] if isinstance(ckpt,dict) and "params_ema" in ckpt else ckpt
-    model.load_state_dict(state, strict=True)
-    model.eval()
-    return model, torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def load_realesrgan_onnx():
+    """Load Real-ESRGAN x4plus through ONNX Runtime; no PyTorch stack."""
+    try:
+        import onnxruntime as ort
+        model_path=Path(REAL_ESRGAN_ONNX_PATH)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        if not model_path.exists() or model_path.stat().st_size < 10_000_000:
+            urllib.request.urlretrieve(REAL_ESRGAN_ONNX_URL, model_path)
+        providers=["CPUExecutionProvider"]
+        sess=ort.InferenceSession(str(model_path), providers=providers)
+        inp=sess.get_inputs()[0]
+        out=sess.get_outputs()[0]
+        return sess, inp, out, None
+    except Exception as e:
+        return None, None, None, str(e)
 
-def swinir_upscale(im, target_scale, sharp):
-    import numpy as np, cv2, torch
-    model, device=load_swinir()
-    model=model.to(device)
-    rgb=np.asarray(im.convert("RGB"),dtype=np.float32)/255.0
+def ai_pro_x4(im, target_scale, sharp):
+    """Real-ESRGAN x4plus ONNX with 128px tiles and original chroma/color lock."""
+    import cv2, numpy as np
+    sess, inp, outinfo, err=load_realesrgan_onnx()
+    if sess is None:
+        raise RuntimeError(f"AI Pro belum siap: {err}")
+    rgb=np.array(im.convert("RGB"),dtype=np.uint8)
     h,w=rgb.shape[:2]
-    # Conservative tile size for CPU/Streamlit Cloud. Must be multiple of 8.
     tile=128
-    overlap=32
-    pad=8
-    ph=(tile-h%tile)%tile
-    pw=(tile-w%tile)%tile
-    if ph or pw:
-        rgb=np.pad(rgb,((0,ph),(0,pw),(0,0)),mode="reflect")
-    H,W=rgb.shape[:2]
-    out=np.zeros((H*4,W*4,3),np.float32)
-    weight=np.zeros((H*4,W*4,1),np.float32)
-    stride=tile-overlap
-    ys=list(range(0,max(1,H-tile+1),stride))
-    xs=list(range(0,max(1,W-tile+1),stride))
-    if ys[-1] != H-tile: ys.append(H-tile)
-    if xs[-1] != W-tile: xs.append(W-tile)
-    with torch.inference_mode():
-        for y in ys:
-            for x in xs:
-                patch=rgb[y:y+tile,x:x+tile]
-                ten=torch.from_numpy(np.transpose(patch,(2,0,1))).unsqueeze(0).to(device)
-                pred=model(ten).clamp(0,1)[0].permute(1,2,0).cpu().numpy()
-                out[y*4:(y+tile)*4,x*4:(x+tile)*4]+=pred
-                weight[y*4:(y+tile)*4,x*4:(x+tile)*4]+=1.0
-    out=np.clip(out/np.maximum(weight,1e-6),0,1)
-    out=out[:h*4,:w*4]
-    # Color lock: AI supplies luminance/detail; original supplies chroma.
-    base=np.asarray(im.convert("RGB").resize((w*4,h*4),Image.Resampling.LANCZOS),dtype=np.uint8)
-    ai=(out*255).round().astype(np.uint8)
-    ai_lab=cv2.cvtColor(ai,cv2.COLOR_RGB2LAB)
-    base_lab=cv2.cvtColor(base,cv2.COLOR_RGB2LAB)
-    # 85% AI luminance + 15% clean base luminance, 100% original chroma.
-    ai_lab[:,:,0]=np.clip(ai_lab[:,:,0].astype(np.float32)*0.85 + base_lab[:,:,0].astype(np.float32)*0.15,0,255).astype(np.uint8)
-    ai_lab[:,:,1]=base_lab[:,:,1]
-    ai_lab[:,:,2]=base_lab[:,:,2]
-    result=Image.fromarray(cv2.cvtColor(ai_lab,cv2.COLOR_LAB2RGB))
+    # reflect-pad so every tile is exactly 128x128
+    ph=(tile-h%tile)%tile; pw=(tile-w%tile)%tile
+    pad=np.pad(rgb,((0,ph),(0,pw),(0,0)),mode="reflect") if (ph or pw) else rgb
+    H,W=pad.shape[:2]
+    ai=np.zeros((H*4,W*4,3),dtype=np.uint8)
+    for y in range(0,H,tile):
+        for x in range(0,W,tile):
+            patch=pad[y:y+tile,x:x+tile]
+            x_in=np.transpose(patch.astype(np.float32)/255.0,(2,0,1))[None,...]
+            y_out=sess.run([outinfo.name],{inp.name:x_in})[0]
+            y_out=np.asarray(y_out)
+            if y_out.ndim==4 and y_out.shape[1]==3:
+                q=np.transpose(y_out[0],(1,2,0))
+            else:
+                q=y_out[0]
+            q=np.clip(q*255.0,0,255).astype(np.uint8)
+            ai[y*4:y*4+tile*4,x*4:x*4+tile*4]=q
+    ai=ai[:h*4,:w*4]
+    # Preserve original chroma while borrowing AI luminance only.
+    ai_lab=cv2.cvtColor(ai,cv2.COLOR_RGB2LAB).astype(np.float32)
+    base=np.array(im.resize((w*4,h*4),Image.Resampling.LANCZOS),dtype=np.uint8)
+    base_lab=cv2.cvtColor(base,cv2.COLOR_RGB2LAB).astype(np.float32)
+    # Gentle luminance blend: enough detail, but less hallucinated color/texture.
+    ai_lab[:,:,0]=0.72*ai_lab[:,:,0]+0.28*base_lab[:,:,0]
+    merged=cv2.cvtColor(np.clip(ai_lab,0,255).astype(np.uint8),cv2.COLOR_LAB2RGB)
+    result=Image.fromarray(merged)
     if target_scale != 4:
-        result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
+        result=result.resize((round(w*target_scale),round(h*target_scale)),Image.Resampling.LANCZOS)
     if sharp:
-        result=result.filter(ImageFilter.UnsharpMask(radius=0.85,percent=35+int(sharp*0.55),threshold=3))
+        result=result.filter(ImageFilter.UnsharpMask(radius=0.9,percent=40+int(sharp*.65),threshold=3))
     return result
-
 
 def encode(im,fmt):
     b=io.BytesIO()
@@ -314,11 +297,9 @@ if page in ("Home","Upscale"):
     with R:
         st.markdown('<div class="panel">',unsafe_allow_html=True)
         st.markdown('<div class="panel-title">⚙️ Pengaturan Upscale</div>',unsafe_allow_html=True)
-        engine_options=["Smart Enhance","AI Fast (FSRCNN)","AI Pro Smooth (SwinIR)"]
-        if st.session_state.engine not in engine_options: st.session_state.engine="Smart Enhance"
-        engine=st.radio("Engine",engine_options,index=engine_options.index(st.session_state.engine),horizontal=True)
+        engine=st.radio("Engine",["Smart Enhance","AI Fast (FSRCNN)","AI Pro (Real-ESRGAN x4plus)"],index=["Smart Enhance","AI Fast (FSRCNN)","AI Pro (Real-ESRGAN x4plus)"].index(st.session_state.engine),horizontal=True)
         st.session_state.engine=engine
-        st.caption("⚡ AI Pro Smooth = SwinIR Real-World x4 • AI Fast = FSRCNN • Smart Enhance = Lanczos")
+        st.caption("⚡ AI Pro = Real-ESRGAN x4plus ONNX • AI Fast = FSRCNN • Smart Enhance = Lanczos + sharpening")
         scale=st.radio("Faktor Upscale",[2,2.5,4],index=[2,2.5,4].index(st.session_state.scale),horizontal=True,format_func=lambda x:f"{x:g}×")
         sharp=st.slider("Detail / Sharpen",0,100,st.session_state.sharp)
         fmt=st.selectbox("Format Output",["JPG","PNG","WEBP"],index=["JPG","PNG","WEBP"].index(st.session_state.fmt))
@@ -355,7 +336,7 @@ if page in ("Home","Upscale"):
                 res=[]; bar=st.progress(0,text="Memproses...")
                 for i,f in enumerate(files):
                     im=Image.open(f).convert("RGB")
-                    res.append((f.name,im,swinir_upscale(im,scale,sharp) if engine == "AI Pro Smooth (SwinIR)" else (ai_upscale(im,scale,sharp,engine) if engine == "AI Fast (FSRCNN)" else up(im,scale,sharp))))
+                    res.append((f.name,im, ai_pro_x4(im,scale,sharp) if engine == "AI Pro (Real-ESRGAN x4plus)" else (ai_upscale(im,scale,sharp,engine) if engine == "AI Fast (FSRCNN)" else up(im,scale,sharp))))
                     bar.progress((i+1)/len(files),text=f"Upscale {i+1}/{len(files)} • {f.name}")
                 st.session_state.results=res
                 st.session_state.page="Output"
@@ -372,7 +353,7 @@ if page=="Output":
         st.markdown(f'### <span class="green">✓ HASIL UPSCALE ({len(results)})</span>',unsafe_allow_html=True)
         st.success(f"{len(results)} gambar selesai • {st.session_state.engine} • {st.session_state.scale:g}× • {st.session_state.fmt} • Geser garis pada foto untuk melihat perbedaan detail.")
         st.markdown("### 🎚️ BEFORE / AFTER — DETAIL COMPARISON")
-        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale. AI Pro Smooth memakai SwinIR Real-World x4 dengan color lock; AI Fast memakai FSRCNN neural super-resolution.")
+        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale. AI Pro memakai Real-ESRGAN x4plus ONNX.")
         cols=st.columns(min(4,len(results)))
         for i,(name,orig,out) in enumerate(results):
             with cols[i%len(cols)]:
