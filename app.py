@@ -71,26 +71,42 @@ for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"
     if k not in st.session_state: st.session_state[k]=v
 
 def up(im,scale,sharp):
-    """Bang Jeff Smooth Detail V17: suppress micro-grain, recover real edges, finish gently."""
-    out=im.resize((round(im.width*scale),round(im.height*scale)),Image.Resampling.LANCZOS)
+    """Bang Jeff SILK DETAIL V18: edge-preserving smoothing + restrained detail."""
+    import cv2, numpy as np
 
-    # Reduce amplified micro-texture without washing out larger forms.
-    if sharp:
-        smooth=out.filter(ImageFilter.GaussianBlur(radius=0.38))
-        # Blend most of the smooth base with a smaller amount of the original.
-        # This keeps fabric/backgrounds clean while preserving overall structure.
-        out=Image.blend(smooth,out,0.72)
+    out=im.resize(
+        (round(im.width*scale), round(im.height*scale)),
+        Image.Resampling.LANCZOS
+    )
 
-        # Controlled final sharpening: lower strength, larger threshold,
-        # so only meaningful edges are emphasized rather than fine grain.
-        strength=12+int(sharp*0.42)
-        out=out.filter(
-            ImageFilter.UnsharpMask(
-                radius=0.62,
-                percent=strength,
-                threshold=6
-            )
+    if not sharp:
+        return out
+
+    # Edge-preserving smoothing targets micro-grain while protecting larger edges.
+    rgb=np.asarray(out.convert("RGB"))
+    bgr=cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    smooth=cv2.bilateralFilter(
+        bgr,
+        d=5,
+        sigmaColor=18,
+        sigmaSpace=3
+    )
+    clean=cv2.cvtColor(smooth, cv2.COLOR_BGR2RGB)
+
+    # Keep most of the clean surface, but retain enough original structure.
+    clean_img=Image.fromarray(clean)
+    out=Image.blend(clean_img,out,0.22)
+
+    # Gentle finishing pass with a high threshold: emphasize real edges,
+    # avoid amplifying fine fabric/background grain.
+    strength=9+int(sharp*0.28)
+    out=out.filter(
+        ImageFilter.UnsharpMask(
+            radius=0.58,
+            percent=strength,
+            threshold=7
         )
+    )
     return out
 
 @st.cache_resource(show_spinner=False)
@@ -135,16 +151,20 @@ def ai_upscale(im, target_scale, sharp, engine_name):
     if target_scale != 4:
         result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
     if sharp:
-        # FSRCNN can already produce strong micro-edges; suppress crunch before
-        # the finishing pass and sharpen only higher-contrast structures.
-        smooth=result.filter(ImageFilter.GaussianBlur(radius=0.30))
-        result=Image.blend(smooth,result,0.76)
-        strength=10+int(sharp*0.34)
+        # FSRCNN output is finished with edge-preserving smoothing rather than
+        # global sharpening, reducing crunchy micro-texture.
+        rgb=np.array(result.convert("RGB"))
+        bgr=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR)
+        smooth=cv2.bilateralFilter(bgr,d=5,sigmaColor=16,sigmaSpace=3)
+        clean=cv2.cvtColor(smooth,cv2.COLOR_BGR2RGB)
+        result=Image.blend(Image.fromarray(clean),result,0.24)
+
+        strength=8+int(sharp*0.24)
         result=result.filter(
             ImageFilter.UnsharpMask(
-                radius=0.60,
+                radius=0.56,
                 percent=strength,
-                threshold=6
+                threshold=7
             )
         )
     return result
