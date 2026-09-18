@@ -339,7 +339,7 @@ def load_onnx_model():
         return None, str(e)
 
 def ai_pro_smooth_upscale(im, target_scale, sharp):
-    """Real-ESRGAN General x4v3 + soft blend + edge-only finishing."""
+    """AI Pro Smooth V24: source color/tonality locked; AI contributes luminance detail only."""
     import cv2, numpy as np
     net, err=load_onnx_model()
     if net is None:
@@ -354,49 +354,62 @@ def ai_pro_smooth_upscale(im, target_scale, sharp):
         for x in range(0,w,tile):
             patch=rgb[y:min(y+tile,h),x:min(x+tile,w)]
             ph,pw=patch.shape[:2]
-            blob=cv2.dnn.blobFromImage(patch, scalefactor=1/255.0, size=(pw,ph), swapRB=False, crop=False)
+            blob=cv2.dnn.blobFromImage(
+                patch, scalefactor=1/255.0, size=(pw,ph),
+                swapRB=False, crop=False
+            )
             net.setInput(blob)
             pred=net.forward()[0].transpose(1,2,0)
             pred=np.clip(pred*255.0,0,255).astype(np.uint8)
             out[y*4:y*4+ph*4,x*4:x*4+pw*4]=pred
 
     ai=Image.fromarray(out,"RGB")
-    if target_scale != 4:
-        ai=ai.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
+    target_size=(round(im.width*target_scale),round(im.height*target_scale))
+    if ai.size != target_size:
+        ai=ai.resize(target_size,Image.Resampling.LANCZOS)
 
-    # Keep original color/chroma while taking AI detail.
-    # Real-ESRGAN can introduce a slight color drift on some photos;
-    # preserving the resized source chroma keeps skin, fabric and product
-    # colors much closer to the original.
-    base=im.resize(ai.size,Image.Resampling.LANCZOS)
-    ai_u8=np.clip(np.asarray(ai),0,255).astype(np.uint8)
-    base_u8=np.asarray(base).astype(np.uint8)
+    # IMPORTANT: the resized original is the visual/color authority.
+    # AI is used only for high-frequency luminance detail.
+    base=im.resize(target_size,Image.Resampling.LANCZOS)
+    base_rgb=np.asarray(base).astype(np.uint8)
+    ai_rgb=np.asarray(ai).astype(np.uint8)
 
-    ai_lab=cv2.cvtColor(ai_u8,cv2.COLOR_RGB2LAB).astype(np.float32)
-    base_lab=cv2.cvtColor(base_u8,cv2.COLOR_RGB2LAB).astype(np.float32)
+    base_lab=cv2.cvtColor(base_rgb,cv2.COLOR_RGB2LAB).astype(np.float32)
+    ai_lab=cv2.cvtColor(ai_rgb,cv2.COLOR_RGB2LAB).astype(np.float32)
 
-    # AI controls luminance/detail; source controls color.
-    lab=ai_lab.copy()
-    lab[...,0]=ai_lab[...,0]*0.86 + base_lab[...,0]*0.14
-    lab[...,1]=base_lab[...,1]
-    lab[...,2]=base_lab[...,2]
+    base_l=base_lab[...,0]
+    ai_l=ai_lab[...,0]
 
-    result=cv2.cvtColor(np.clip(lab,0,255).astype(np.uint8),cv2.COLOR_LAB2RGB)
+    # Extract only fine AI detail; do NOT import AI's global tone/color.
+    ai_smooth=cv2.GaussianBlur(ai_l,(0,0),1.25)
+    ai_detail=ai_l-ai_smooth
 
+    # Gentle structure lift plus restrained micro-detail.
+    # Higher slider = slightly stronger edge/detail, never color change.
+    strength=0.35 + 0.65*(float(sharp)/100.0)
+    detail_gain=0.48*strength
+    l_new=base_l + ai_detail*detail_gain
+
+    # Keep luminance safely within range and keep source chroma 100%.
+    result_lab=base_lab.copy()
+    result_lab[...,0]=np.clip(l_new,0,255)
+    result=cv2.cvtColor(np.clip(result_lab,0,255).astype(np.uint8),cv2.COLOR_LAB2RGB)
+
+    # Final edge-only cleanup for a smooth commercial-photo look.
     if sharp:
         bgr=cv2.cvtColor(result,cv2.COLOR_RGB2BGR)
-        clean=cv2.bilateralFilter(bgr,d=7,sigmaColor=24,sigmaSpace=5)
+        clean=cv2.bilateralFilter(bgr,d=7,sigmaColor=22,sigmaSpace=5)
         gray=cv2.cvtColor(clean,cv2.COLOR_BGR2GRAY)
         gx=cv2.Sobel(gray,cv2.CV_32F,1,0,ksize=3)
         gy=cv2.Sobel(gray,cv2.CV_32F,0,1,ksize=3)
         mag=cv2.magnitude(gx,gy)
-        mask=np.clip((mag-13.0)/50.0,0.0,1.0)
+        mask=np.clip((mag-16.0)/55.0,0.0,1.0)
         mask=cv2.GaussianBlur(mask,(0,0),1.0)[...,None]
-        amount=0.12 + 0.18*(sharp/100.0)
-        soft=cv2.GaussianBlur(clean,(0,0),0.8)
+        amount=0.05 + 0.12*(float(sharp)/100.0)
+        soft=cv2.GaussianBlur(clean,(0,0),0.85)
         detail=clean.astype(np.float32)+(clean.astype(np.float32)-soft.astype(np.float32))*amount
-        cleanf=clean.astype(np.float32)
-        result=cleanf*(1.0-mask*0.48)+detail*(mask*0.48)
+        c=clean.astype(np.float32)
+        result=c*(1.0-mask*0.35)+detail*(mask*0.35)
 
     return Image.fromarray(np.clip(result,0,255).astype(np.uint8),"RGB")
 
