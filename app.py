@@ -5,7 +5,12 @@ import streamlit as st
 from PIL import Image, ImageFilter
 
 AI_MODELS = {
-    "AI Fast (FSRCNN)": ("https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb", "models/FSRCNN_x4.pb", "fsrcnn", 4),
+    "AI Fast (FSRCNN)": (
+        "https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb",
+        "models/FSRCNN_x4.pb",
+        "fsrcnn",
+        4,
+    ),
     "AI Pro Smooth (Real-ESRGAN ONNX)": (
         "https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/main/realesr-general-x4v3.onnx",
         "models/realesr-general-x4v3.onnx",
@@ -120,23 +125,150 @@ def up(im,scale,sharp):
 
 @st.cache_resource(show_spinner=False)
 def load_ai_model(engine_name):
-    """Download and cache the selected x4 AI model on the Streamlit server."""
+    """Load either FSRCNN or the Real-ESRGAN x4v3 ONNX model."""
     try:
         import cv2
-        if not hasattr(cv2, "dnn_superres"):
-            raise RuntimeError("OpenCV contrib is not installed")
-        url, path_str, model_name, model_scale = AI_MODELS[engine_name]
-        model_path=Path(path_str)
+        url, path_str = AI_MODELS[engine_name][:2]
+        model_path = Path(path_str)
         model_path.parent.mkdir(parents=True, exist_ok=True)
-        min_size = 1_000_000 if model_name == "fsrcnn" else 30_000_000
+        min_size = 1_000_000 if engine_name == "AI Fast (FSRCNN)" else 4_000_000
         if not model_path.exists() or model_path.stat().st_size < min_size:
             urllib.request.urlretrieve(url, model_path)
-        sr=cv2.dnn_superres.DnnSuperResImpl_create()
+
+        if engine_name == "AI Pro Smooth (Real-ESRGAN ONNX)":
+            net = cv2.dnn.readNetFromONNX(str(model_path))
+            return ("onnx", net), None
+
+        if not hasattr(cv2, "dnn_superres"):
+            raise RuntimeError("OpenCV contrib is not installed")
+        sr = cv2.dnn_superres.DnnSuperResImpl_create()
         sr.readModel(str(model_path))
-        sr.setModel(model_name, model_scale)
-        return sr, None
+        sr.setModel("fsrcnn", 4)
+        return ("fsrcnn", sr), None
     except Exception as e:
         return None, str(e)
+
+def _realesrgan_onnx_4x(rgb, net, tile=256, overlap=16):
+    """Run the RGB NCHW Real-ESRGAN ONNX model in overlapping tiles."""
+    import numpy as np
+    h, w = rgb.shape[:2]
+    out_h, out_w = h * 4, w * 4
+    acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
+    weights = np.zeros((out_h, out_w, 1), dtype=np.float32)
+    step = max(1, tile - overlap)
+
+    for y in range(0, h, step):
+        y0 = min(y, max(0, h - tile))
+        y1 = min(h, y0 + tile)
+        for x in range(0, w, step):
+            x0 = min(x, max(0, w - tile))
+            x1 = min(w, x0 + tile)
+            patch = rgb[y0:y1, x0:x1]
+            ph, pw = patch.shape[:2]
+
+            inp = np.transpose(patch.astype(np.float32) / 255.0, (2, 0, 1))[None, ...]
+            net.setInput(inp)
+            pred = net.forward()[0]
+            pred = np.transpose(pred, (1, 2, 0))
+            pred = np.clip(pred * 255.0, 0, 255).astype(np.float32)
+
+            oy0, ox0 = y0 * 4, x0 * 4
+            oy1, ox1 = oy0 + ph * 4, ox0 + pw * 4
+
+            feather = min(overlap * 4, min(ph * 4, pw * 4) // 2)
+            wy = np.ones(ph * 4, dtype=np.float32)
+            wx = np.ones(pw * 4, dtype=np.float32)
+            if feather > 1:
+                if x0 > 0:
+                    wx[:feather] = np.linspace(0, 1, feather)
+                if x1 < w:
+                    wx[-feather:] = np.linspace(1, 0, feather)
+                if y0 > 0:
+                    wy[:feather] = np.linspace(0, 1, feather)
+                if y1 < h:
+                    wy[-feather:] = np.linspace(1, 0, feather)
+            weight = (wy[:, None] * wx[None, :])[..., None]
+
+            acc[oy0:oy1, ox0:ox1] += pred * weight
+            weights[oy0:oy1, ox0:ox1] += weight
+
+    return np.clip(acc / np.maximum(weights, 1e-6), 0, 255).astype(np.uint8)
+
+def _color_lock(ai_rgb, original_rgb):
+    """Preserve the original chroma while using AI for luminance/detail."""
+    import cv2, numpy as np
+    orig = cv2.resize(
+        original_rgb,
+        (ai_rgb.shape[1], ai_rgb.shape[0]),
+        interpolation=cv2.INTER_LANCZOS4,
+    )
+    ai_ycc = cv2.cvtColor(ai_rgb, cv2.COLOR_RGB2YCrCb)
+    orig_ycc = cv2.cvtColor(orig, cv2.COLOR_RGB2YCrCb)
+
+    y_ai = ai_ycc[..., 0].astype(np.float32)
+    y_orig = orig_ycc[..., 0].astype(np.float32)
+    y = np.clip(y_ai * 0.82 + y_orig * 0.18, 0, 255).astype(np.uint8)
+
+    locked = np.dstack((y, orig_ycc[..., 1], orig_ycc[..., 2]))
+    return cv2.cvtColor(locked, cv2.COLOR_YCrCb2RGB)
+
+def ai_upscale(im, target_scale, sharp, engine_name):
+    """AI x4 upscale with color-locked Real-ESRGAN ONNX."""
+    import cv2, numpy as np
+
+    loaded, err = load_ai_model(engine_name)
+    if loaded is None:
+        raise RuntimeError(f"AI engine belum siap: {err}")
+
+    kind, model = loaded
+    rgb = np.asarray(im.convert("RGB"))
+
+    if kind == "onnx":
+        rgb4 = _realesrgan_onnx_4x(rgb, model, tile=256, overlap=16)
+    else:
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        tile = 256
+        h, w = bgr.shape[:2]
+        out = np.zeros((h * 4, w * 4, 3), dtype=np.uint8)
+        for y in range(0, h, tile):
+            for x in range(0, w, tile):
+                patch = bgr[y:min(y+tile,h), x:min(x+tile,w)]
+                ph, pw = patch.shape[:2]
+                up = model.upsample(patch)
+                out[y*4:y*4+ph*4, x*4:x*4+pw*4] = up
+        rgb4 = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+
+    rgb4 = _color_lock(rgb4, rgb)
+
+    if target_scale != 4:
+        rgb4 = np.asarray(
+            Image.fromarray(rgb4).resize(
+                (round(im.width * target_scale), round(im.height * target_scale)),
+                Image.Resampling.LANCZOS,
+            )
+        )
+
+    result = Image.fromarray(rgb4)
+    if sharp:
+        bgr = cv2.cvtColor(np.asarray(result), cv2.COLOR_RGB2BGR)
+        clean = cv2.bilateralFilter(bgr, d=7, sigmaColor=24, sigmaSpace=5)
+
+        gray = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        mag = cv2.magnitude(gx, gy)
+        mask = np.clip((mag - 14.0) / 52.0, 0.0, 1.0)
+        mask = cv2.GaussianBlur(mask, (0, 0), 1.0)[..., None]
+
+        base = clean.astype(np.float32) * 0.84 + bgr.astype(np.float32) * 0.16
+        soft = cv2.GaussianBlur(clean, (0, 0), 0.72)
+        detail = clean.astype(np.float32) + (clean.astype(np.float32) - soft.astype(np.float32)) * 0.16
+        out = base * (1.0 - mask * 0.36) + detail * (mask * 0.36)
+        result = Image.fromarray(
+            cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_BGR2RGB)
+        )
+
+    return result
 
 def ai_upscale(im, target_scale, sharp, engine_name):
     """AI x4 super-resolution. FSRCNN is the fast public-cloud option;  is the slower pro option."""
