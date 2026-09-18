@@ -4,8 +4,10 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image, ImageFilter
 
-AI_MODEL_URL = "https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/EDSR_x4.pb"
-AI_MODEL_PATH = Path("models/EDSR_x4.pb")
+AI_MODELS = {
+    "AI Fast (FSRCNN)": ("https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb", "models/FSRCNN_x4.pb", "fsrcnn", 4),
+    "AI Pro (EDSR)": ("https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/EDSR_x4.pb", "models/EDSR_x4.pb", "edsr", 4),
+}
 
 st.set_page_config(page_title="UPSCALE BANG JEFF AI", page_icon="👑", layout="wide")
 
@@ -14,6 +16,9 @@ st.markdown("""
 .stApp{background:radial-gradient(circle at 90% 4%,rgba(120,65,255,.28),transparent 25%),radial-gradient(circle at 3% 75%,rgba(0,190,255,.12),transparent 24%),linear-gradient(135deg,#030910,#071423 52%,#11103a);color:#fff}
 .block-container{max-width:1540px;padding:62px 24px 35px}
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#030914,#071322);border-right:1px solid #294867}
+header,[data-testid="stHeader"]{background:linear-gradient(90deg,#030910,#071423 52%,#11103a)!important;border:0!important}
+[data-testid="stDecoration"]{background:transparent!important}
+[data-testid="stToolbar"]{background:transparent!important}
 [data-testid="stSidebar"] *{color:#edf5ff}
 .brand{font-size:34px;font-weight:1000;background:linear-gradient(90deg,#22ddff,#6870ff,#e44fff);-webkit-background-clip:text;color:transparent}
 .bang{font-size:30px;font-weight:1000;font-style:italic;color:#fff;text-shadow:0 0 18px rgba(255,194,48,.35)}
@@ -56,7 +61,7 @@ pages = {
 labels=list(pages.values())
 label_to_key={v:k for k,v in pages.items()}
 
-for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"JPG","engine":"AI EDSR"}.items():
+for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"JPG","engine":"AI Fast (FSRCNN)"}.items():
     if k not in st.session_state: st.session_state[k]=v
 
 def up(im,scale,sharp):
@@ -66,26 +71,29 @@ def up(im,scale,sharp):
     return out
 
 @st.cache_resource(show_spinner=False)
-def load_ai_model():
-    """Download and cache the EDSR x4 model on the Streamlit server."""
+def load_ai_model(engine_name):
+    """Download and cache the selected x4 AI model on the Streamlit server."""
     try:
         import cv2
         if not hasattr(cv2, "dnn_superres"):
             raise RuntimeError("OpenCV contrib is not installed")
-        AI_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not AI_MODEL_PATH.exists() or AI_MODEL_PATH.stat().st_size < 30_000_000:
-            urllib.request.urlretrieve(AI_MODEL_URL, AI_MODEL_PATH)
+        url, path_str, model_name, model_scale = AI_MODELS[engine_name]
+        model_path=Path(path_str)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        min_size = 1_000_000 if model_name == "fsrcnn" else 30_000_000
+        if not model_path.exists() or model_path.stat().st_size < min_size:
+            urllib.request.urlretrieve(url, model_path)
         sr=cv2.dnn_superres.DnnSuperResImpl_create()
-        sr.readModel(str(AI_MODEL_PATH))
-        sr.setModel("edsr",4)
+        sr.readModel(str(model_path))
+        sr.setModel(model_name, model_scale)
         return sr, None
     except Exception as e:
         return None, str(e)
 
-def ai_upscale(im, target_scale, sharp):
-    """EDSR x4 AI super-resolution. For 2x/2.5x, AI x4 is reduced to target size."""
+def ai_upscale(im, target_scale, sharp, engine_name):
+    """AI x4 super-resolution. FSRCNN is the fast public-cloud option; EDSR is the slower pro option."""
     import cv2, numpy as np
-    sr, err = load_ai_model()
+    sr, err = load_ai_model(engine_name)
     if sr is None:
         raise RuntimeError(f"AI engine belum siap: {err}")
     rgb=np.array(im.convert("RGB"))
@@ -194,7 +202,7 @@ with st.sidebar:
     st.markdown("**Bukan sekadar memperbesar gambar, tapi memperbesar peluang.**")
     st.caption("— Bang Jeff 👑")
     st.divider()
-    st.caption("V13 AI • Made with Passion ❤️")
+    st.caption("V14 AI • Made with Passion ❤️")
     st.caption("Online & Local • Batch image processing")
 
 st.markdown('<div class="hero">SMALL IMAGE, BIGGER DREAMS.</div>',unsafe_allow_html=True)
@@ -222,9 +230,9 @@ if page in ("Home","Upscale"):
     with R:
         st.markdown('<div class="panel">',unsafe_allow_html=True)
         st.markdown('<div class="panel-title">⚙️ Pengaturan Upscale</div>',unsafe_allow_html=True)
-        engine=st.radio("Engine",["AI EDSR","Smart Enhance"],index=["AI EDSR","Smart Enhance"].index(st.session_state.engine),horizontal=True)
+        engine=st.radio("Engine",["AI Fast (FSRCNN)","Smart Enhance","AI Pro (EDSR)"],index=["AI Fast (FSRCNN)","Smart Enhance","AI Pro (EDSR)"].index(st.session_state.engine),horizontal=True)
         st.session_state.engine=engine
-        st.caption("🤖 AI EDSR = neural super-resolution • Smart Enhance = Lanczos + sharpening")
+        st.caption("⚡ AI Fast = FSRCNN neural super-resolution • 🧠 AI Pro = EDSR • Smart Enhance = Lanczos + sharpening")
         scale=st.radio("Faktor Upscale",[2,2.5,4],index=[2,2.5,4].index(st.session_state.scale),horizontal=True,format_func=lambda x:f"{x:g}×")
         sharp=st.slider("Detail / Sharpen",0,100,st.session_state.sharp)
         fmt=st.selectbox("Format Output",["JPG","PNG","WEBP"],index=["JPG","PNG","WEBP"].index(st.session_state.fmt))
@@ -261,7 +269,7 @@ if page in ("Home","Upscale"):
                 res=[]; bar=st.progress(0,text="Memproses...")
                 for i,f in enumerate(files):
                     im=Image.open(f).convert("RGB")
-                    res.append((f.name,im,ai_upscale(im,scale,sharp) if engine=="AI EDSR" else up(im,scale,sharp)))
+                    res.append((f.name,im,ai_upscale(im,scale,sharp,engine) if engine in ("AI Fast (FSRCNN)","AI Pro (EDSR)") else up(im,scale,sharp)))
                     bar.progress((i+1)/len(files),text=f"Upscale {i+1}/{len(files)} • {f.name}")
                 st.session_state.results=res
                 st.session_state.page="Output"
@@ -278,7 +286,7 @@ if page=="Output":
         st.markdown(f'### <span class="green">✓ HASIL UPSCALE ({len(results)})</span>',unsafe_allow_html=True)
         st.success(f"{len(results)} gambar selesai • {st.session_state.engine} • {st.session_state.scale:g}× • {st.session_state.fmt} • Geser garis pada foto untuk melihat perbedaan detail.")
         st.markdown("### 🎚️ BEFORE / AFTER — DETAIL COMPARISON")
-        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale. AI EDSR memakai model neural x4 dan ditile agar lebih ramah RAM.")
+        st.caption("Geser garis putih pada foto. Kiri = original • Kanan = hasil upscale. AI Fast memakai FSRCNN; AI Pro memakai EDSR. Keduanya ditile agar lebih ramah RAM.")
         cols=st.columns(min(4,len(results)))
         for i,(name,orig,out) in enumerate(results):
             with cols[i%len(cols)]:
