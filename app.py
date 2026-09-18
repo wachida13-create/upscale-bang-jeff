@@ -232,14 +232,27 @@ def ai_pro_smooth_upscale(im, target_scale, sharp):
     if target_scale != 4:
         ai=ai.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
 
-    # Keep the neural result smooth by blending a small amount of clean Lanczos.
+    # Keep original color/chroma while taking AI detail.
+    # Real-ESRGAN can introduce a slight color drift on some photos;
+    # preserving the resized source chroma keeps skin, fabric and product
+    # colors much closer to the original.
     base=im.resize(ai.size,Image.Resampling.LANCZOS)
-    ai_np=np.asarray(ai).astype(np.float32)
-    base_np=np.asarray(base).astype(np.float32)
-    result=ai_np*0.76 + base_np*0.24
+    ai_u8=np.clip(np.asarray(ai),0,255).astype(np.uint8)
+    base_u8=np.asarray(base).astype(np.uint8)
+
+    ai_lab=cv2.cvtColor(ai_u8,cv2.COLOR_RGB2LAB).astype(np.float32)
+    base_lab=cv2.cvtColor(base_u8,cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    # AI controls luminance/detail; source controls color.
+    lab=ai_lab.copy()
+    lab[...,0]=ai_lab[...,0]*0.86 + base_lab[...,0]*0.14
+    lab[...,1]=base_lab[...,1]
+    lab[...,2]=base_lab[...,2]
+
+    result=cv2.cvtColor(np.clip(lab,0,255).astype(np.uint8),cv2.COLOR_LAB2RGB)
 
     if sharp:
-        bgr=cv2.cvtColor(np.clip(result,0,255).astype(np.uint8),cv2.COLOR_RGB2BGR)
+        bgr=cv2.cvtColor(result,cv2.COLOR_RGB2BGR)
         clean=cv2.bilateralFilter(bgr,d=7,sigmaColor=24,sigmaSpace=5)
         gray=cv2.cvtColor(clean,cv2.COLOR_BGR2GRAY)
         gx=cv2.Sobel(gray,cv2.CV_32F,1,0,ksize=3)
