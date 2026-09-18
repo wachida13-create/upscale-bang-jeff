@@ -71,9 +71,14 @@ for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"
     if k not in st.session_state: st.session_state[k]=v
 
 def up(im,scale,sharp):
+    """Bang Jeff Smooth Detail: clean enlargement with controlled, non-crunchy sharpening."""
     out=im.resize((round(im.width*scale),round(im.height*scale)),Image.Resampling.LANCZOS)
+    # Very light pre-smoothing reduces crunchy pixel/texture edges before detail recovery.
     if sharp:
-        out=out.filter(ImageFilter.UnsharpMask(radius=1.2,percent=70+int(sharp*1.4),threshold=2))
+        out=out.filter(ImageFilter.GaussianBlur(radius=0.28))
+        # Lower radius + moderate strength keeps edges defined without harsh halos.
+        strength=22+int(sharp*0.62)
+        out=out.filter(ImageFilter.UnsharpMask(radius=0.72,percent=strength,threshold=4))
     return out
 
 @st.cache_resource(show_spinner=False)
@@ -118,7 +123,10 @@ def ai_upscale(im, target_scale, sharp, engine_name):
     if target_scale != 4:
         result=result.resize((round(im.width*target_scale),round(im.height*target_scale)),Image.Resampling.LANCZOS)
     if sharp:
-        result=result.filter(ImageFilter.UnsharpMask(radius=1.05,percent=55+int(sharp*.9),threshold=2))
+        # FSRCNN already creates strong edges; keep the finishing pass gentle.
+        result=result.filter(ImageFilter.GaussianBlur(radius=0.22))
+        strength=18+int(sharp*0.48)
+        result=result.filter(ImageFilter.UnsharpMask(radius=0.68,percent=strength,threshold=4))
     return result
 
 def encode(im,fmt):
