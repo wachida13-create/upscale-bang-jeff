@@ -11,7 +11,9 @@ st.markdown("""
 <style>
 .stApp{background:radial-gradient(circle at 90% 4%,rgba(120,65,255,.28),transparent 25%),radial-gradient(circle at 3% 75%,rgba(0,190,255,.12),transparent 24%),linear-gradient(135deg,#030910,#071423 52%,#11103a);color:#fff}
 .block-container{max-width:1540px;padding:28px 24px 35px}
-header[data-testid="stHeader"]{background:transparent!important;border:0!important;box-shadow:none!important;color:transparent!important}
+header[data-testid="stHeader"]{background:transparent!important;border:0!important;box-shadow:none!important;color:inherit!important}
+header[data-testid="stHeader"] button{color:#ffffff!important;background:transparent!important;opacity:1!important}
+[data-testid="stSidebarCollapsedControl"],[data-testid="stSidebarCollapseButton"]{display:flex!important;visibility:visible!important;opacity:1!important}
 [data-testid="stToolbar"]{display:none!important}
 [data-testid="stDecoration"]{display:none!important}
 footer{display:none!important}
