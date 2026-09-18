@@ -10,7 +10,12 @@ st.set_page_config(page_title="UPSCALE BANG JEFF AI", page_icon="👑", layout="
 st.markdown("""
 <style>
 .stApp{background:radial-gradient(circle at 90% 4%,rgba(120,65,255,.28),transparent 25%),radial-gradient(circle at 3% 75%,rgba(0,190,255,.12),transparent 24%),linear-gradient(135deg,#030910,#071423 52%,#11103a);color:#fff}
-.block-container{max-width:1540px;padding:62px 24px 35px}
+.block-container{max-width:1540px;padding:28px 24px 35px}
+header[data-testid="stHeader"]{display:none!important}
+[data-testid="stToolbar"]{display:none!important}
+[data-testid="stDecoration"]{display:none!important}
+footer{display:none!important}
+#MainMenu{display:none!important}
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#030914,#071322);border-right:1px solid #294867}
 [data-testid="stSidebar"] *{color:#edf5ff}
 .brand{font-size:34px;font-weight:1000;background:linear-gradient(90deg,#22ddff,#6870ff,#e44fff);-webkit-background-clip:text;color:transparent}
@@ -57,6 +62,9 @@ label_to_key={v:k for k,v in pages.items()}
 for k,v in {"page":"Home","files":[],"results":[],"scale":2.5,"sharp":40,"fmt":"JPG","engine":"Smart Enhance"}.items():
     if k not in st.session_state: st.session_state[k]=v
 
+FAST_MODEL_URL="https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb"
+FAST_MODEL_PATH=Path(".cache")/"FSRCNN_x4.pb"
+
 def up(im,scale,sharp):
     out=im.resize((round(im.width*scale),round(im.height*scale)),Image.Resampling.LANCZOS)
     if sharp:
@@ -64,31 +72,30 @@ def up(im,scale,sharp):
     return out
 
 @st.cache_resource(show_spinner=False)
-def load_ai_model():
-    """Download and cache the EDSR x4 model on the Streamlit server."""
+def load_fast_ai_model():
+    """Download and cache the lightweight FSRCNN x4 model."""
     try:
         import cv2
         if not hasattr(cv2, "dnn_superres"):
             raise RuntimeError("OpenCV contrib is not installed")
-        AI_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not AI_MODEL_PATH.exists() or AI_MODEL_PATH.stat().st_size < 30_000_000:
-            urllib.request.urlretrieve(AI_MODEL_URL, AI_MODEL_PATH)
+        FAST_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not FAST_MODEL_PATH.exists() or FAST_MODEL_PATH.stat().st_size < 10_000:
+            urllib.request.urlretrieve(FAST_MODEL_URL, FAST_MODEL_PATH)
         sr=cv2.dnn_superres.DnnSuperResImpl_create()
-        sr.readModel(str(AI_MODEL_PATH))
-        sr.setModel("edsr",4)
+        sr.readModel(str(FAST_MODEL_PATH))
+        sr.setModel("fsrcnn",4)
         return sr, None
     except Exception as e:
         return None, str(e)
 
-def ai_upscale(im, target_scale, sharp):
-    """EDSR x4 AI super-resolution. For 2x/2.5x, AI x4 is reduced to target size."""
+def ai_fast_upscale(im, target_scale, sharp):
+    """FSRCNN x4 AI super-resolution, resized down for 2x/2.5x targets."""
     import cv2, numpy as np
-    sr, err = load_ai_model()
+    sr, err = load_fast_ai_model()
     if sr is None:
-        raise RuntimeError(f"AI engine belum siap: {err}")
+        raise RuntimeError(f"AI Fast belum siap: {err}")
     rgb=np.array(im.convert("RGB"))
-    bgr=cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    # Tile inference keeps large photos from requiring one giant tensor.
+    bgr=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR)
     tile=256
     h,w=bgr.shape[:2]
     out=np.zeros((h*4,w*4,3),dtype=np.uint8)
@@ -192,7 +199,7 @@ with st.sidebar:
     st.markdown("**Bukan sekadar memperbesar gambar, tapi memperbesar peluang.**")
     st.caption("— Bang Jeff 👑")
     st.divider()
-    st.caption("V14 LIGHT • Made with Passion ❤️")
+    st.caption("V15 AI FAST • Made with Passion ❤️")
     st.caption("Online & Local • Batch image processing")
 
 st.markdown('<div class="hero">SMALL IMAGE, BIGGER DREAMS.</div>',unsafe_allow_html=True)
@@ -220,9 +227,13 @@ if page in ("Home","Upscale"):
     with R:
         st.markdown('<div class="panel">',unsafe_allow_html=True)
         st.markdown('<div class="panel-title">⚙️ Pengaturan Upscale</div>',unsafe_allow_html=True)
-        engine=st.radio("Engine",["Smart Enhance"],index=0,horizontal=True)
+        engines=["Smart Enhance","AI Fast"]
+        engine=st.radio("Engine",engines,index=engines.index(st.session_state.engine) if st.session_state.engine in engines else 0,horizontal=True)
         st.session_state.engine=engine
-        st.caption("⚡ Smart Enhance = Lanczos upscaling + intelligent sharpening • ringan & cepat")
+        if engine=="Smart Enhance":
+            st.caption("⚡ Smart Enhance = Lanczos upscaling + intelligent sharpening • ringan & cepat")
+        else:
+            st.caption("🤖 AI Fast = FSRCNN super-resolution • lebih detail dengan model AI ringan")
         scale=st.radio("Faktor Upscale",[2,2.5,4],index=[2,2.5,4].index(st.session_state.scale),horizontal=True,format_func=lambda x:f"{x:g}×")
         sharp=st.slider("Detail / Sharpen",0,100,st.session_state.sharp)
         fmt=st.selectbox("Format Output",["JPG","PNG","WEBP"],index=["JPG","PNG","WEBP"].index(st.session_state.fmt))
@@ -257,10 +268,18 @@ if page in ("Home","Upscale"):
             a,b=st.columns(2)
             if a.button("⚡ UPSCALE ALL",type="primary",use_container_width=True):
                 res=[]; bar=st.progress(0,text="Memproses...")
-                for i,f in enumerate(files):
-                    im=Image.open(f).convert("RGB")
-                    res.append((f.name,im,up(im,scale,sharp)))
-                    bar.progress((i+1)/len(files),text=f"Upscale {i+1}/{len(files)} • {f.name}")
+                try:
+                    for i,f in enumerate(files):
+                        im=Image.open(f).convert("RGB")
+                        if engine=="AI Fast":
+                            enhanced=ai_fast_upscale(im,scale,sharp)
+                        else:
+                            enhanced=up(im,scale,sharp)
+                        res.append((f.name,im,enhanced))
+                        bar.progress((i+1)/len(files),text=f"Upscale {i+1}/{len(files)} • {f.name}")
+                except Exception as e:
+                    st.error(f"AI Fast gagal diproses: {e}")
+                    st.stop()
                 st.session_state.results=res
                 st.session_state.page="Output"
                 st.rerun()
@@ -314,7 +333,7 @@ if page=="Settings":
 
 if page=="About":
     st.markdown("## ℹ️ About")
-    st.markdown("### 👑 UPSCALE BANG JEFF AI")
+    st.markdown("### 👑 UPSCALE BANG JEFF V15 AI FAST")
     st.write("Upload → Smart Enhance → Compare → Download. Batch workflow untuk gambar, tersedia lokal maupun online.")
 
 st.markdown('<div style="text-align:center;color:#71859f;font-size:10px;padding:20px">UPSCALE BANG JEFF 👑 • CREATE MORE • EARN MORE • KEEP GROWING</div>',unsafe_allow_html=True)
