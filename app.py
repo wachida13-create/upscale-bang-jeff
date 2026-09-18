@@ -21,9 +21,9 @@ footer{display:none!important}
 .brand{font-size:34px;font-weight:1000;background:linear-gradient(90deg,#22ddff,#6870ff,#e44fff);-webkit-background-clip:text;color:transparent}
 .bang{font-size:30px;font-weight:1000;font-style:italic;color:#fff;text-shadow:0 0 18px rgba(255,194,48,.35)}
 .muted{font-size:10px;color:#8da1bb}
-.hero{position:relative;z-index:5;font-size:50px;font-weight:1000;letter-spacing:-2px;line-height:1;background:linear-gradient(90deg,#fff,#59d2ff,#d568ff);-webkit-background-clip:text;color:transparent}
+.hero{position:relative;z-index:5;font-size:44px;font-weight:1000;letter-spacing:-2px;line-height:1;background:linear-gradient(90deg,#fff,#59d2ff,#d568ff);-webkit-background-clip:text;color:transparent}
 .top-status{display:flex;justify-content:flex-end;align-items:center;gap:9px;margin-bottom:2px;font-size:11px;font-weight:900;color:#b9c9df;letter-spacing:.3px}.status-pill{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid rgba(71,213,255,.35);border-radius:999px;background:rgba(5,20,38,.72);box-shadow:0 0 18px rgba(46,184,255,.10)}.status-dot{width:9px;height:9px;border-radius:50%;background:#45f2ae;box-shadow:0 0 0 0 rgba(69,242,174,.7);animation:pulse 1.6s infinite}.status-dot.busy{background:#ff3d70;box-shadow:0 0 0 0 rgba(255,61,112,.7);animation:pulseBusy 1s infinite}.status-text{color:#eaf4ff}@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(69,242,174,.65)}70%{box-shadow:0 0 0 8px rgba(69,242,174,0)}100%{box-shadow:0 0 0 0 rgba(69,242,174,0)}}@keyframes pulseBusy{0%{box-shadow:0 0 0 0 rgba(255,61,112,.7)}70%{box-shadow:0 0 0 9px rgba(255,61,112,0)}100%{box-shadow:0 0 0 0 rgba(255,61,112,0)}}
-.subtitle{font-size:17px;font-weight:700;color:#d8e5f4}
+.hero-quote{margin:10px 0 7px;font-size:18px;font-weight:800;font-style:italic;line-height:1.25;color:#ff66b3;text-shadow:0 0 14px rgba(255,55,150,.32)}.subtitle{font-size:17px;font-weight:700;color:#d8e5f4}
 .ai-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:linear-gradient(90deg,#ff1265,#7d4dff);color:#fff;font-size:11px;font-weight:1000;box-shadow:0 0 18px rgba(255,30,120,.22)}
 .feature{font-size:13px;font-weight:950;color:#fff;text-align:center}
 .quote{min-height:82px;padding:14px 17px;border-radius:15px;background:linear-gradient(135deg,#102945,#091727);border:1px solid #2c4d72}
@@ -205,7 +205,8 @@ with st.sidebar:
 
 status_slot=st.empty()
 status_slot.markdown('<div class="top-status"><div class="status-pill"><span class="status-dot"></span><span class="status-text">● READY • AI ENGINE ONLINE</span></div></div>',unsafe_allow_html=True)
-st.markdown('<div class="hero">SMALL IMAGE, BIGGER DREAMS.</div>',unsafe_allow_html=True)
+st.markdown('<div class="hero">👑 UPSCALE BANG JEFF — SMALL IMAGE, BIGGER DREAMS.</div>',unsafe_allow_html=True)
+st.markdown('<div class="hero-quote">“Dari gambar sekecil debu, kita besarkan menjadi peluang sebesar langit—karena mimpi besar pantas punya resolusi tanpa batas.”</div>',unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Upscale Today. Create More. Earn More. Keep Growing. 🚀 &nbsp; <span class="ai-badge">SMART IMAGE ENHANCER</span></div>',unsafe_allow_html=True)
 st.write("")
 for c,t in zip(st.columns(5),["🔍 Higher Resolution","✨ Sharper Details","📚 Batch Processing","⬇️ One Click Download","🌍 Online & Local"]):
